@@ -1,0 +1,29 @@
+### Conectar al PLC
+POST http://localhost:3000/plc/connect
+Content-Type: application/json
+
+{
+  "ip": "192.168.1.100",
+  "rack": 0,
+  "slot": 1
+}
+
+### Verificar estado de conexión
+GET http://localhost:3000/plc/status
+
+### Leer todas las variables del PLC
+GET http://localhost:3000/plc/variables
+
+### Obtener información del PLC
+GET http://localhost:3000/plc/info
+
+### Desconectar del PLC
+POST http://localhost:3000/plc/disconnect
+
+### Ejemplo con IP diferente
+POST http://localhost:3000/plc/connect
+Content-Type: application/json
+
+{
+  "ip": "10.0.0.50"
+}
