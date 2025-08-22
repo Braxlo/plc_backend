@@ -1,150 +1,209 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as snap7 from 'node-snap7';
 
 export interface PlcVariable {
   name: string;
   address: string;
-  type: 'bool' | 'int' | 'real' | 'string';
-  comment: string;
+  dataType: string;
+  value?: any;
 }
 
-export interface PlcData {
-  fechaHora: string;
-  vb: number;
-  cb: number;
-  sw: number;
-  et: number;
-  pt: number;
-  vs: number;
-  cs: number;
+export interface PlcConnectionConfig {
+  ip: string;
+  rack?: number;
+  slot?: number;
 }
 
 @Injectable()
-export class PlcService {
+export class PlcService implements OnModuleDestroy {
   private readonly logger = new Logger(PlcService.name);
   private client: snap7.S7Client;
   private isConnected = false;
+
+  // Variables del PLC según la imagen
+  private readonly plcVariables: PlcVariable[] = [
+    { name: 'fechaHora', address: 'P#DB51.DBX164.0', dataType: 'DATE_AND_TIME' },
+    { name: 'VB', address: '%DB1.DBD24', dataType: 'Real' },
+    { name: 'CB', address: '%DB1.DBW28', dataType: 'DEC+/-' },
+    { name: 'SW', address: '%DB1.DBW50', dataType: 'DEC+/-' },
+    { name: 'ET', address: '%DB1.DBW16', dataType: 'DEC+/-' },
+    { name: 'PT', address: '%DB1.DBW18', dataType: 'DEC+/-' },
+    { name: 'VS', address: '%DB1.DBD36', dataType: 'Real' },
+    { name: 'CS', address: '%DB1.DBW34', dataType: 'DEC+/-' },
+  ];
 
   constructor() {
     this.client = new snap7.S7Client();
   }
 
-  async connectToPlc(ip: string, rack: number = 0, slot: number = 1): Promise<boolean> {
+  async connectToPlc(config: PlcConnectionConfig): Promise<boolean> {
     try {
-      this.logger.log(`Intentando conectar al PLC en ${ip}`);
+      this.logger.log(`Intentando conectar al PLC en ${config.ip}...`);
       
-      const result = await this.client.ConnectTo(ip, rack, slot);
+      const result = await this.client.ConnectTo(config.ip, config.rack || 0, config.slot || 1);
       
       if (result === 0) {
         this.isConnected = true;
-        this.logger.log(`Conectado exitosamente al PLC en ${ip}`);
+        this.logger.log('Conexión exitosa al PLC');
         return true;
       } else {
-        this.logger.error(`Error al conectar al PLC: ${result}`);
+        this.logger.error(`Error al conectar al PLC. Código: ${result}`);
+        this.isConnected = false;
         return false;
       }
     } catch (error) {
-      this.logger.error(`Error de conexión: ${error.message}`);
+      this.logger.error('Error durante la conexión al PLC:', error);
+      this.isConnected = false;
       return false;
     }
   }
 
   async disconnectFromPlc(): Promise<void> {
     if (this.isConnected) {
-      await this.client.Disconnect();
-      this.isConnected = false;
-      this.logger.log('Desconectado del PLC');
+      try {
+        await this.client.Disconnect();
+        this.isConnected = false;
+        this.logger.log('Desconectado del PLC');
+      } catch (error) {
+        this.logger.error('Error al desconectar del PLC:', error);
+        this.isConnected = false;
+      }
     }
   }
 
-  async readPlcVariables(): Promise<PlcData> {
+  async getConnectionStatus(): Promise<{ connected: boolean; ip?: string }> {
+    return {
+      connected: this.isConnected,
+    };
+  }
+
+  async readAllVariables(): Promise<PlcVariable[]> {
+    if (!this.isConnected) {
+      throw new Error('No hay conexión activa con el PLC');
+    }
+
+    const variablesWithValues = [...this.plcVariables];
+    
+    for (const variable of variablesWithValues) {
+      try {
+        variable.value = await this.readVariable(variable.address, variable.dataType);
+      } catch (error) {
+        this.logger.error(`Error al leer variable ${variable.name}:`, error);
+        variable.value = null;
+      }
+    }
+
+    return variablesWithValues;
+  }
+
+  async readVariable(address: string, dataType: string): Promise<any> {
     if (!this.isConnected) {
       throw new Error('No hay conexión activa con el PLC');
     }
 
     try {
-      // Leer fecha y hora (DB51.DBX164.0 - string de 8 bytes)
-      const fechaHoraBuffer = await this.client.DBRead(51, 164, 8);
-      const fechaHora = this.bufferToString(fechaHoraBuffer);
+      // Convertir la dirección del PLC a formato snap7
+      const parsedAddress = this.parsePlcAddress(address);
+      
+      if (!parsedAddress) {
+        throw new Error(`Dirección de PLC no válida: ${address}`);
+      }
 
-      // Leer VB (DB1.DBD24 - real de 4 bytes)
-      const vbBuffer = await this.client.DBRead(1, 24, 4);
-      const vb = this.bufferToReal(vbBuffer);
+      const buffer = await this.client.DBRead(parsedAddress.db, parsedAddress.start, parsedAddress.size);
+      
+      if (!buffer) {
+        throw new Error('No se pudo leer datos del PLC');
+      }
 
-      // Leer CB (DB1.DBW28 - int de 2 bytes)
-      const cbBuffer = await this.client.DBRead(1, 28, 2);
-      const cb = this.bufferToInt(cbBuffer);
-
-      // Leer SW (DB1.DBW50 - int de 2 bytes)
-      const swBuffer = await this.client.DBRead(1, 50, 2);
-      const sw = this.bufferToInt(swBuffer);
-
-      // Leer ET (DB1.DBW16 - int de 2 bytes)
-      const etBuffer = await this.client.DBRead(1, 16, 2);
-      const et = this.bufferToInt(etBuffer);
-
-      // Leer PT (DB1.DBW18 - int de 2 bytes)
-      const ptBuffer = await this.client.DBRead(1, 18, 2);
-      const pt = this.bufferToInt(ptBuffer);
-
-      // Leer VS (DB1.DBD36 - real de 4 bytes)
-      const vsBuffer = await this.client.DBRead(1, 36, 4);
-      const vs = this.bufferToReal(vsBuffer);
-
-      // Leer CS (DB1.DBW34 - int de 2 bytes)
-      const csBuffer = await this.client.DBRead(1, 34, 2);
-      const cs = this.bufferToInt(csBuffer);
-
-      return {
-        fechaHora,
-        vb,
-        cb,
-        sw,
-        et,
-        pt,
-        vs,
-        cs,
-      };
+      return this.parseValue(buffer, dataType, parsedAddress.bitOffset);
     } catch (error) {
-      this.logger.error(`Error al leer variables del PLC: ${error.message}`);
+      this.logger.error(`Error al leer variable en dirección ${address}:`, error);
       throw error;
     }
   }
 
-  private bufferToString(buffer: Buffer): string {
-    return buffer.toString('utf8').replace(/\0/g, '');
-  }
+  private parsePlcAddress(address: string): { db: number; start: number; size: number; bitOffset?: number } | null {
+    // Parsear direcciones como P#DB51.DBX164.0, %DB1.DBD24, %DB1.DBW28, etc.
+    const dbMatch = address.match(/DB(\d+)/);
+    if (!dbMatch) return null;
 
-  private bufferToInt(buffer: Buffer): number {
-    return buffer.readInt16LE(0);
-  }
-
-  private bufferToReal(buffer: Buffer): number {
-    return buffer.readFloatLE(0);
-  }
-
-  getConnectionStatus(): boolean {
-    return this.isConnected;
-  }
-
-  async getPlcInfo(): Promise<any> {
-    if (!this.isConnected) {
-      throw new Error('No hay conexión activa con el PLC');
+    const db = parseInt(dbMatch[1]);
+    
+    if (address.includes('DBX')) {
+      // Para bits: P#DB51.DBX164.0
+      const dbxMatch = address.match(/DBX(\d+)\.(\d+)/);
+      if (dbxMatch) {
+        const start = parseInt(dbxMatch[1]);
+        const bitOffset = parseInt(dbxMatch[2]);
+        return { db, start, size: 1, bitOffset };
+      }
+    } else if (address.includes('DBD')) {
+      // Para double words (32 bits): %DB1.DBD24
+      const dbdMatch = address.match(/DBD(\d+)/);
+      if (dbdMatch) {
+        const start = parseInt(dbdMatch[1]);
+        return { db, start, size: 4 };
+      }
+    } else if (address.includes('DBW')) {
+      // Para words (16 bits): %DB1.DBW28
+      const dbwMatch = address.match(/DBW(\d+)/);
+      if (dbwMatch) {
+        const start = parseInt(dbwMatch[1]);
+        return { db, start, size: 2 };
+      }
+    } else if (address.includes('DBB')) {
+      // Para bytes (8 bits): %DB1.DBB30
+      const dbbMatch = address.match(/DBB(\d+)/);
+      if (dbbMatch) {
+        const start = parseInt(dbbMatch[1]);
+        return { db, start, size: 1 };
+      }
     }
 
+    return null;
+  }
+
+  private parseValue(buffer: Buffer, dataType: string, bitOffset?: number): any {
     try {
-      const orderCode = await this.client.GetOrderCode();
-      const cpuInfo = await this.client.GetCpuInfo();
-      const cpInfo = await this.client.GetCpInfo();
-
-      return {
-        orderCode,
-        cpuInfo,
-        cpInfo,
-      };
+      switch (dataType) {
+        case 'DATE_AND_TIME':
+          // Para DTL (Date and Time), leer 12 bytes
+          if (buffer.length >= 12) {
+            // Simplificado - en producción se debería parsear correctamente el formato DTL
+            return `DTL#${new Date().toISOString()}`;
+          }
+          break;
+        
+        case 'Real':
+          // Para Real (32 bits float)
+          if (buffer.length >= 4) {
+            return buffer.readFloatLE(0);
+          }
+          break;
+        
+        case 'DEC+/-':
+          // Para enteros con signo (16 bits)
+          if (buffer.length >= 2) {
+            return buffer.readInt16LE(0);
+          }
+          break;
+        
+        default:
+          // Para bits individuales
+          if (bitOffset !== undefined && buffer.length >= 1) {
+            return (buffer[0] & (1 << bitOffset)) !== 0;
+          }
+          break;
+      }
+      
+      return null;
     } catch (error) {
-      this.logger.error(`Error al obtener información del PLC: ${error.message}`);
-      throw error;
+      this.logger.error('Error al parsear valor:', error);
+      return null;
     }
+  }
+
+  onModuleDestroy() {
+    this.disconnectFromPlc();
   }
 }

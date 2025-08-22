@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { PlcController } from './plc.controller';
 import { PlcService } from './plc.service';
+import { PlcController } from './plc.controller';
 
 @Module({
   controllers: [PlcController],

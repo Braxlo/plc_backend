@@ -1,32 +1,27 @@
 import { Controller, Post, Get, Body, HttpException, HttpStatus } from '@nestjs/common';
-import { PlcService, PlcData } from './plc.service';
-import { ConnectPlcDto } from './dto/connect-plc.dto';
+import { PlcService } from './plc.service';
+import type { PlcConnectionConfig, PlcVariable } from './plc.service';
 
 @Controller('plc')
 export class PlcController {
   constructor(private readonly plcService: PlcService) {}
 
   @Post('connect')
-  async connectToPlc(@Body() connectDto: ConnectPlcDto) {
+  async connectToPlc(@Body() config: PlcConnectionConfig) {
     try {
-      const { ip, rack = 0, slot = 1 } = connectDto;
+      const success = await this.plcService.connectToPlc(config);
       
-      if (!ip) {
-        throw new HttpException('La IP del PLC es requerida', HttpStatus.BAD_REQUEST);
-      }
-
-      const isConnected = await this.plcService.connectToPlc(ip, rack, slot);
-      
-      if (isConnected) {
+      if (success) {
         return {
           success: true,
-          message: `Conectado exitosamente al PLC en ${ip}`,
-          ip,
-          rack,
-          slot,
+          message: 'Conexión exitosa al PLC',
+          timestamp: new Date().toISOString(),
         };
       } else {
-        throw new HttpException('No se pudo conectar al PLC', HttpStatus.INTERNAL_SERVER_ERROR);
+        throw new HttpException(
+          'No se pudo establecer conexión con el PLC',
+          HttpStatus.BAD_REQUEST,
+        );
       }
     } catch (error) {
       throw new HttpException(
@@ -42,7 +37,8 @@ export class PlcController {
       await this.plcService.disconnectFromPlc();
       return {
         success: true,
-        message: 'Desconectado exitosamente del PLC',
+        message: 'Desconectado del PLC',
+        timestamp: new Date().toISOString(),
       };
     } catch (error) {
       throw new HttpException(
@@ -54,18 +50,30 @@ export class PlcController {
 
   @Get('status')
   async getConnectionStatus() {
-    const isConnected = this.plcService.getConnectionStatus();
-    return {
-      connected: isConnected,
-      message: isConnected ? 'Conectado al PLC' : 'No conectado al PLC',
-    };
+    try {
+      const status = await this.plcService.getConnectionStatus();
+      return {
+        ...status,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      throw new HttpException(
+        `Error al obtener estado de conexión: ${error.message}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   @Get('variables')
-  async readPlcVariables(): Promise<PlcData> {
+  async readAllVariables() {
     try {
-      const variables = await this.plcService.readPlcVariables();
-      return variables;
+      const variables = await this.plcService.readAllVariables();
+      return {
+        success: true,
+        variables,
+        count: variables.length,
+        timestamp: new Date().toISOString(),
+      };
     } catch (error) {
       throw new HttpException(
         `Error al leer variables del PLC: ${error.message}`,
@@ -74,14 +82,20 @@ export class PlcController {
     }
   }
 
-  @Get('info')
-  async getPlcInfo() {
+  @Get('variables/:name')
+  async readVariable(@Body() body: { address: string; dataType: string }) {
     try {
-      const info = await this.plcService.getPlcInfo();
-      return info;
+      const value = await this.plcService.readVariable(body.address, body.dataType);
+      return {
+        success: true,
+        address: body.address,
+        dataType: body.dataType,
+        value,
+        timestamp: new Date().toISOString(),
+      };
     } catch (error) {
       throw new HttpException(
-        `Error al obtener información del PLC: ${error.message}`,
+        `Error al leer variable del PLC: ${error.message}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
